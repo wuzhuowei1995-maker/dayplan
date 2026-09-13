@@ -1,6 +1,5 @@
 (() => {
   const app = document.getElementById("app");
-  const TH = 42;
 
   const parseTime = (t) => {
     const [h, m] = t.split(":").map(Number);
@@ -16,7 +15,7 @@
     let day = now.getDay();
     let minute = now.getHours() * 60 + now.getMinutes();
 
-    // 00:00–03:59 仍算前一天晚上的延续。
+    // 00:00–03:59 仍视为前一天晚上的延续。
     if (minute < 240) {
       day = (day + 6) % 7;
       minute += 1440;
@@ -47,193 +46,152 @@
 
   function buildTimeline() {
     const now = logicalNow();
-    const todayTasks = tasksForDay(now.day);
-    const baseToday = findCurrentIndex(todayTasks, now.minute);
-
+    const today = tasksForDay(now.day);
+    const current = findCurrentIndex(today, now.minute);
     const timeline = [];
 
-    // 当前项 + 今天剩余安排。
-    for (let i = baseToday; i < todayTasks.length; i++) {
-      timeline.push({ ...todayTasks[i], relativeDay: 0, originalIndex: i });
+    // 从“现在”开始，只渲染尚未过去的内容。
+    for (let i = current; i < today.length; i++) {
+      timeline.push({ ...today[i], relativeDay: 0 });
     }
 
-    // 再接下一天完整安排，避免凌晨/当天末尾无法继续滑。
-    const nextDay = (now.day + 1) % 7;
-    const nextTasks = tasksForDay(nextDay);
-    for (let i = 0; i < nextTasks.length; i++) {
-      timeline.push({ ...nextTasks[i], relativeDay: 1, originalIndex: i });
+    // 当天看完后继续显示明天，避免凌晨或最后一项无法继续滑。
+    const tomorrow = (now.day + 1) % 7;
+    for (const task of tasksForDay(tomorrow)) {
+      timeline.push({ ...task, relativeDay: 1 });
     }
 
-    return { now, timeline };
+    return timeline;
   }
 
-  let state = buildTimeline();
-  let view = 0;
-  let busy = false;
+  function installNativeScrollStyles() {
+    // 这里直接用 JS 覆盖旧版本 CSS，因此即使 iPhone 仍缓存旧 index.html，
+    // 新版 app.js 加载后也能立即恢复原生滚动。
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    document.body.style.touchAction = "auto";
+    document.body.style.overscrollBehavior = "none";
 
-  function dayLabel(task, index) {
-    if (index === 0) return "现在";
-    if (task.relativeDay === 0) return "今天稍后";
-    return "明天";
+    Object.assign(app.style, {
+      position: "fixed",
+      inset: "0",
+      overflowX: "hidden",
+      overflowY: "auto",
+      touchAction: "pan-y",
+      WebkitOverflowScrolling: "touch",
+      scrollSnapType: "y mandatory",
+      overscrollBehaviorY: "contain",
+      background: "#f5f5f2"
+    });
   }
 
-  function makeCard(task, index, cls = "") {
-    const el = document.createElement("section");
-    el.className = `card ${cls}`.trim();
+  function makeCard(task, index) {
+    const card = document.createElement("section");
+    card.className = "card";
+
+    // 不依赖旧 CSS，关键布局直接写在元素上。
+    Object.assign(card.style, {
+      position: "relative",
+      inset: "auto",
+      width: "100%",
+      height: "100dvh",
+      minHeight: "100dvh",
+      flex: "0 0 100dvh",
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "max(34px, env(safe-area-inset-top)) 28px max(38px, env(safe-area-inset-bottom))",
+      textAlign: "center",
+      background: "#f5f5f2",
+      scrollSnapAlign: "start",
+      scrollSnapStop: "always"
+    });
 
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = `${window.DAY_NAMES[task.day]} · ${dayLabel(task, index)} · ${displayTime(task.startText)}–${displayTime(task.endText)}`;
+    meta.textContent = `${window.DAY_NAMES[task.day]} · ${index === 0 ? "现在" : task.relativeDay === 0 ? "今天稍后" : "明天"} · ${displayTime(task.startText)}–${displayTime(task.endText)}`;
 
     const title = document.createElement("div");
     title.className = "title";
     title.textContent = task.title;
 
-    el.append(meta, title);
+    card.append(meta, title);
 
     if (task.note) {
       const note = document.createElement("div");
       note.className = "note";
       note.textContent = task.note;
-      el.appendChild(note);
+      card.appendChild(note);
     }
 
-    return el;
+    // 第一页给一个很轻的滑动提示；不增加按钮或菜单。
+    if (index === 0) {
+      const hint = document.createElement("div");
+      hint.textContent = "↑ 上滑看后续";
+      Object.assign(hint.style, {
+        position: "absolute",
+        left: "0",
+        right: "0",
+        bottom: "max(18px, env(safe-area-inset-bottom))",
+        color: "#8a8a8a",
+        fontSize: "13px",
+        fontWeight: "400"
+      });
+      card.appendChild(hint);
+    }
+
+    return card;
   }
 
-  function render(reset = false) {
-    state = buildTimeline();
-    if (reset) view = 0;
-    view = Math.min(view, Math.max(state.timeline.length - 1, 0));
+  function render() {
+    installNativeScrollStyles();
+    const timeline = buildTimeline();
     app.replaceChildren();
 
-    if (!state.timeline.length) {
+    if (!timeline.length) {
       const empty = document.createElement("section");
-      empty.className = "card";
       empty.textContent = "没有安排";
+      Object.assign(empty.style, {
+        height: "100dvh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+      });
       app.appendChild(empty);
       return;
     }
 
-    app.appendChild(makeCard(state.timeline[view], view));
+    timeline.forEach((task, index) => app.appendChild(makeCard(task, index)));
+    app.scrollTop = 0;
   }
 
-  function move(dir) {
-    if (busy || !state.timeline.length) return;
+  render();
 
-    const target = view + dir;
-    if (target < 0 || target >= state.timeline.length) return;
-
-    busy = true;
-    const old = app.querySelector(".card");
-    view = target;
-
-    const enterClass = dir > 0 ? "enter-up" : "enter-down";
-    const exitClass = dir > 0 ? "exit-up" : "exit-down";
-    const next = makeCard(state.timeline[view], view, enterClass);
-    app.appendChild(next);
-
-    requestAnimationFrame(() => {
-      old?.classList.add(exitClass);
-      next.classList.add("enter-active");
-    });
-
-    setTimeout(() => {
-      old?.remove();
-      next.classList.remove("enter-up", "enter-down", "enter-active");
-      busy = false;
-    }, 190);
-  }
-
-  function handleSwipe(dx, dy) {
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < TH) return;
-
-    if (Math.abs(dy) >= Math.abs(dx)) {
-      if (dy < 0) move(1);
-      else move(-1);
-    } else {
-      if (dx < 0) move(1);
-      else move(-1);
-    }
-  }
-
-  // iPhone / 触摸屏
-  let touchX = 0;
-  let touchY = 0;
-
-  app.addEventListener("touchstart", (e) => {
-    if (!e.touches.length) return;
-    touchX = e.touches[0].clientX;
-    touchY = e.touches[0].clientY;
-  }, { passive: true });
-
-  app.addEventListener("touchend", (e) => {
-    if (!e.changedTouches.length) return;
-    handleSwipe(
-      e.changedTouches[0].clientX - touchX,
-      e.changedTouches[0].clientY - touchY
-    );
-  }, { passive: true });
-
-  // 电脑鼠标拖动 / Pointer Events
-  let pointerDown = false;
-  let pointerX = 0;
-  let pointerY = 0;
-
-  app.addEventListener("pointerdown", (e) => {
-    if (e.pointerType === "touch") return;
-    pointerDown = true;
-    pointerX = e.clientX;
-    pointerY = e.clientY;
-    try { app.setPointerCapture(e.pointerId); } catch (_) {}
-  });
-
-  app.addEventListener("pointerup", (e) => {
-    if (!pointerDown || e.pointerType === "touch") return;
-    pointerDown = false;
-    handleSwipe(e.clientX - pointerX, e.clientY - pointerY);
-  });
-
-  app.addEventListener("pointercancel", () => {
-    pointerDown = false;
-  });
-
-  // 电脑鼠标滚轮：向下滚 = 下一项，向上滚 = 上一项。
-  let wheelLocked = false;
-  app.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    if (wheelLocked || Math.abs(e.deltaY) < 8) return;
-    wheelLocked = true;
-    move(e.deltaY > 0 ? 1 : -1);
-    setTimeout(() => { wheelLocked = false; }, 250);
-  }, { passive: false });
-
-  // 键盘测试
-  addEventListener("keydown", (e) => {
-    if (["ArrowUp", "ArrowRight", " ", "PageDown"].includes(e.key)) {
-      e.preventDefault();
-      move(1);
-    } else if (["ArrowDown", "ArrowLeft", "PageUp"].includes(e.key)) {
-      e.preventDefault();
-      move(-1);
-    }
-  });
-
-  // 从后台重新打开时，回到“现在”。
+  // 从后台重新打开时重新定位到“现在”。
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) render(true);
+    if (!document.hidden) render();
   });
 
-  // 每 30 秒检查当前时间段是否变化；如果用户停留在“现在”，自动更新。
+  // 时间跨到下一计划块后，若用户仍停留在第一页，则自动更新。
+  let lastKey = "";
   setInterval(() => {
-    if (view === 0) render(true);
+    const first = buildTimeline()[0];
+    const key = first ? `${first.day}-${first.startText}-${first.title}` : "";
+    if (!lastKey) lastKey = key;
+    if (key !== lastKey && app.scrollTop < window.innerHeight * 0.25) {
+      lastKey = key;
+      render();
+    }
   }, 30000);
 
-  render(true);
-
+  // 主动要求浏览器检查 service worker 更新，减少旧缓存持续时间。
   if ("serviceWorker" in navigator) {
-    addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    window.addEventListener("load", async () => {
+      try {
+        const reg = await navigator.serviceWorker.register("./sw.js");
+        await reg.update();
+      } catch (_) {}
     });
   }
 })();
